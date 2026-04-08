@@ -6,19 +6,56 @@
     <title>Centro Médico Gallo - Gestión de Turnos</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <script>
+        // Configuración runtime para Netlify.
+        // Reemplazá estos valores por los de tu Web App en Firebase Console.
+        window.__firebase_config = window.__firebase_config || {
+            apiKey: "REEMPLAZAR_API_KEY",
+            authDomain: "REEMPLAZAR_AUTH_DOMAIN",
+            projectId: "REEMPLAZAR_PROJECT_ID",
+            appId: "REEMPLAZAR_APP_ID"
+        };
+
+        // Opcional: podés sobreescribir esto desde otro script antes del módulo principal.
+        window.__allowed_emails = window.__allowed_emails || JSON.stringify([
+            "recepcion1@gallomed.com",
+            "recepcion2@gallomed.com"
+        ]);
+    </script>
     <!-- Firebase SDKs -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, collection, addDoc, getDocs, query, where, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        const firebaseConfig = JSON.parse(window.__firebase_config || "{}");
+        function getFirebaseConfig() {
+            try {
+                if (!window.__firebase_config) {
+                    return {};
+                }
+
+                if (typeof window.__firebase_config === "string") {
+                    return JSON.parse(window.__firebase_config);
+                }
+
+                if (typeof window.__firebase_config === "object") {
+                    return window.__firebase_config;
+                }
+
+                return {};
+            } catch (error) {
+                console.error("Error parseando __firebase_config:", error);
+                return {};
+            }
+        }
+
+        const firebaseConfig = getFirebaseConfig();
         const appId = typeof __app_id !== "undefined" ? __app_id : "centro-medico-gallo";
         const allowedEmails = JSON.parse(window.__allowed_emails || '["recepcion1@gallomed.com","recepcion2@gallomed.com"]');
 
-        const app = initializeApp(firebaseConfig);
-        const auth = getAuth(app);
-        const db = getFirestore(app);
+        let app = null;
+        let auth = null;
+        let db = null;
 
         let currentUser = null;
         let turnosUnsubscribe = null;
@@ -613,8 +650,25 @@
             return firebaseConfig && firebaseConfig.apiKey && firebaseConfig.projectId && firebaseConfig.appId;
         }
 
+        function initFirebaseServices() {
+            try {
+                app = initializeApp(firebaseConfig);
+                auth = getAuth(app);
+                db = getFirestore(app);
+                return true;
+            } catch (error) {
+                console.error("Error inicializando Firebase:", error);
+                return false;
+            }
+        }
+
         function initApp() {
             if (!validateFirebaseConfig()) {
+                renderConfigError();
+                return;
+            }
+
+            if (!initFirebaseServices()) {
                 renderConfigError();
                 return;
             }
