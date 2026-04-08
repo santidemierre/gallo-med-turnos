@@ -1,0 +1,48 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isAllowedUser() {
+      return request.auth != null
+        && request.auth.token.email != null
+        && request.auth.token.email in [
+          'recepcion1@gallomed.com',
+          'recepcion2@gallomed.com'
+        ];
+    }
+
+    function isValidTurnoData(data) {
+      return data.keys().hasOnly([
+        'medicoId',
+        'paciente',
+        'dni',
+        'fecha',
+        'hora',
+        'telefono',
+        'obraSocial',
+        'primeraVez',
+        'nota',
+        'userId',
+        'userEmail',
+        'createdAt'
+      ])
+      && data.medicoId is string
+      && data.paciente is string
+      && data.dni is string
+      && data.fecha is string
+      && data.hora is string
+      && data.primeraVez is bool
+      && data.userId is string
+      && data.userEmail is string;
+    }
+
+    match /artifacts/{appId}/public/data/turnos/{turnoId} {
+      allow read: if isAllowedUser();
+      allow create: if isAllowedUser() && isValidTurnoData(request.resource.data);
+      allow update, delete: if false;
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
