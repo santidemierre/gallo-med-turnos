@@ -37,6 +37,7 @@
         let authUnsubscribe = null;
         let activeStorageMode = "local";
         let firebaseApi = null;
+        let selectedAgendaDate = getLocalISODate();
         const authListeners = [];
         const turnosListeners = [];
         const medicos = ["BERNAUDO", "BOCCA", "CANTARELLA", "COLL", "EKIZIAN", "FELIPPO", "GARCIA", "LOPEZ CABANILLAS", "PINON", "PUENTES"];
@@ -52,6 +53,21 @@
         function getLocalISODate(date = new Date()) {
             const offsetMs = date.getTimezoneOffset() * 60000;
             return new Date(date.getTime() - offsetMs).toISOString().slice(0, 10);
+        }
+
+        function parseISODate(isoDate) {
+            const [year, month, day] = String(isoDate || "").split("-").map(Number);
+            return new Date(year || 1970, (month || 1) - 1, day || 1);
+        }
+
+        function addDaysToISODate(isoDate, days) {
+            const date = parseISODate(isoDate);
+            date.setDate(date.getDate() + days);
+            return getLocalISODate(date);
+        }
+
+        function formatDateLong(isoDate) {
+            return parseISODate(isoDate).toLocaleDateString("es-AR", { day: "2-digit", month: "long", year: "numeric" });
         }
 
         function getFirebaseConfig() {
@@ -343,6 +359,29 @@
             return getTurnosByDate(fecha);
         }
 
+        async function getAllTurnos() {
+            if (activeStorageMode === "firebase" && firebaseApi) {
+                const snapshot = await firebaseApi.getDocs(getTurnosCollectionRefFirebase());
+                return snapshot.docs
+                    .map((turnoDoc) => ({ id: turnoDoc.id, ...turnoDoc.data() }))
+                    .sort((a, b) => {
+                        const dateCompare = String(a.fecha || "").localeCompare(String(b.fecha || ""));
+                        if (dateCompare !== 0) {
+                            return dateCompare;
+                        }
+                        return String(a.hora || "").localeCompare(String(b.hora || ""));
+                    });
+            }
+
+            return readStoredTurnos().sort((a, b) => {
+                const dateCompare = String(a.fecha || "").localeCompare(String(b.fecha || ""));
+                if (dateCompare !== 0) {
+                    return dateCompare;
+                }
+                return String(a.hora || "").localeCompare(String(b.hora || ""));
+            });
+        }
+
         async function saveTurno(turnoData) {
             if (activeStorageMode === "firebase" && firebaseApi) {
                 await firebaseApi.addDoc(getTurnosCollectionRefFirebase(), {
@@ -560,7 +599,7 @@
                     <div class="bg-white w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 shadow-sm">
                         <i class="fas fa-calendar-alt text-slate-300 text-2xl"></i>
                     </div>
-                    <p class="text-slate-500 font-medium">No hay turnos para el día de hoy</p>
+                    <p class="text-slate-500 font-medium">No hay turnos para el día seleccionado</p>
                     <button id="btn-crear-primero" class="mt-4 text-blue-600 font-bold hover:underline">Crear el primero</button>
                 </div>`;
 
@@ -578,14 +617,19 @@
             }
 
             stopTurnosSubscription();
-            const hoyStr = getLocalISODate();
+            const selectedDate = selectedAgendaDate;
 
-            turnosUnsubscribe = subscribeTurnosByDate(hoyStr, (turnosSorted) => {
+            turnosUnsubscribe = subscribeTurnosByDate(selectedDate, (turnosSorted) => {
                 const listEl = document.getElementById("lista-turnos");
                 const countEl = document.getElementById("count-hoy");
+                const labelEl = document.getElementById("agenda-fecha-label");
 
                 if (!listEl || !countEl) {
                     return;
+                }
+
+                if (labelEl) {
+                    labelEl.textContent = formatDateLong(selectedDate);
                 }
 
                 if (!turnosSorted.length) {
@@ -651,11 +695,11 @@
         async function exportarTurnosHoyCSV() {
             try {
                 showLoading(true);
-                const hoyStr = getLocalISODate();
-                const turnosSorted = await getTurnosForDate(hoyStr);
+                const agendaDate = selectedAgendaDate;
+                const turnosSorted = await getTurnosForDate(agendaDate);
 
                 if (!turnosSorted.length) {
-                    showToast("No hay turnos para exportar hoy.", "error");
+                    showToast("No hay turnos para exportar en la fecha seleccionada.", "error");
                     return;
                 }
 
@@ -677,7 +721,7 @@
                 const url = URL.createObjectURL(blob);
                 const link = document.createElement("a");
                 link.href = url;
-                link.download = `turnos-${hoyStr}.csv`;
+                link.download = `turnos-${agendaDate}.csv`;
                 document.body.appendChild(link);
                 link.click();
                 link.remove();
@@ -689,6 +733,150 @@
                 showToast("No se pudo exportar el CSV", "error");
             } finally {
                 showLoading(false);
+            }
+        }
+
+        async function renderMedicosView() {
+            const mainContent = getMainContent();
+            if (!mainContent) {
+                return;
+            }
+
+            mainContent.innerHTML = `
+                <div class="max-w-6xl mx-auto p-4 md:p-8">
+                    <header class="mb-6">
+                        <h1 class="text-3xl font-bold text-slate-800">Médicos</h1>
+                        <p class="text-slate-500 font-medium">Carga de agenda por profesional</p>
+                    </header>
+                    <div id="medicos-content" class="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
+                        <p class="text-slate-400 italic text-center py-12">Cargando métricas...</p>
+                    </div>
+                </div>
+            `;
+
+            try {
+                const allTurnos = await getAllTurnos();
+                const hoy = getLocalISODate();
+                const byMedico = medicos.map((medicoId) => {
+                    const total = allTurnos.filter((turno) => turno.medicoId === medicoId).length;
+                    const hoyCount = allTurnos.filter((turno) => turno.medicoId === medicoId && turno.fecha === hoy).length;
+                    return { medicoId, total, hoyCount };
+                });
+
+                const content = document.getElementById("medicos-content");
+                if (!content) {
+                    return;
+                }
+
+                content.innerHTML = `
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        ${byMedico.map((row) => `
+                            <div class="border border-slate-200 rounded-2xl p-4 flex items-center justify-between">
+                                <div>
+                                    <p class="text-slate-800 font-bold">Dr. ${row.medicoId}</p>
+                                    <p class="text-sm text-slate-500">Total turnos: <span class="font-semibold">${row.total}</span></p>
+                                </div>
+                                <div class="text-right">
+                                    <p class="text-xs uppercase tracking-widest text-slate-400">Hoy</p>
+                                    <p class="text-2xl font-black text-blue-600">${row.hoyCount}</p>
+                                </div>
+                            </div>
+                        `).join("")}
+                    </div>
+                `;
+            } catch (error) {
+                console.error("Error cargando vista médicos:", error);
+                showToast("No se pudo cargar la vista de médicos", "error");
+            }
+        }
+
+        async function renderPacientesView() {
+            const mainContent = getMainContent();
+            if (!mainContent) {
+                return;
+            }
+
+            mainContent.innerHTML = `
+                <div class="max-w-6xl mx-auto p-4 md:p-8">
+                    <header class="mb-6 flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+                        <div>
+                            <h1 class="text-3xl font-bold text-slate-800">Pacientes</h1>
+                            <p class="text-slate-500 font-medium">Listado histórico por DNI</p>
+                        </div>
+                        <button id="btn-pacientes-nuevo" class="bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-xl font-bold transition-colors">
+                            Nuevo Turno
+                        </button>
+                    </header>
+                    <div id="pacientes-content" class="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
+                        <p class="text-slate-400 italic text-center py-12">Cargando pacientes...</p>
+                    </div>
+                </div>
+            `;
+
+            const btnPacientesNuevo = document.getElementById("btn-pacientes-nuevo");
+            if (btnPacientesNuevo) {
+                btnPacientesNuevo.addEventListener("click", renderForm);
+            }
+
+            try {
+                const allTurnos = await getAllTurnos();
+                const latestByDni = new Map();
+                allTurnos.forEach((turno) => {
+                    const key = String(turno.dni || "");
+                    const existing = latestByDni.get(key);
+                    if (!existing) {
+                        latestByDni.set(key, turno);
+                        return;
+                    }
+
+                    const existingStamp = `${existing.fecha || ""}-${existing.hora || ""}`;
+                    const turnoStamp = `${turno.fecha || ""}-${turno.hora || ""}`;
+                    if (turnoStamp > existingStamp) {
+                        latestByDni.set(key, turno);
+                    }
+                });
+
+                const pacientes = Array.from(latestByDni.values()).sort((a, b) => String(a.paciente || "").localeCompare(String(b.paciente || "")));
+
+                const content = document.getElementById("pacientes-content");
+                if (!content) {
+                    return;
+                }
+
+                if (!pacientes.length) {
+                    content.innerHTML = "<p class=\"text-slate-500 text-center py-10\">Aún no hay pacientes cargados.</p>";
+                    return;
+                }
+
+                content.innerHTML = `
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-sm">
+                            <thead>
+                                <tr class="text-left text-slate-500 border-b border-slate-200">
+                                    <th class="py-3 pr-4">Paciente</th>
+                                    <th class="py-3 pr-4">DNI</th>
+                                    <th class="py-3 pr-4">Última Fecha</th>
+                                    <th class="py-3 pr-4">Médico</th>
+                                    <th class="py-3 pr-4">Obra Social</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${pacientes.map((p) => `
+                                    <tr class="border-b border-slate-100">
+                                        <td class="py-3 pr-4 font-semibold text-slate-800">${p.paciente || "-"}</td>
+                                        <td class="py-3 pr-4 text-slate-600">${p.dni || "-"}</td>
+                                        <td class="py-3 pr-4 text-slate-600">${p.fecha || "-"} ${p.hora || ""}</td>
+                                        <td class="py-3 pr-4 text-slate-600">${p.medicoId || "-"}</td>
+                                        <td class="py-3 pr-4 text-slate-600">${p.obraSocial || "S/O"}</td>
+                                    </tr>
+                                `).join("")}
+                            </tbody>
+                        </table>
+                    </div>
+                `;
+            } catch (error) {
+                console.error("Error cargando vista pacientes:", error);
+                showToast("No se pudo cargar la vista de pacientes", "error");
             }
         }
 
@@ -713,13 +901,7 @@
                         showToast("Iniciá sesión para ver profesionales.", "error");
                         return;
                     }
-                    renderDashboard();
-                    setTimeout(() => {
-                        const panelMedicos = document.getElementById("panel-medicos");
-                        if (panelMedicos) {
-                            panelMedicos.scrollIntoView({ behavior: "smooth", block: "start" });
-                        }
-                    }, 0);
+                    renderMedicosView();
                 });
             }
 
@@ -731,7 +913,7 @@
                         showToast("Iniciá sesión para gestionar pacientes.", "error");
                         return;
                     }
-                    renderForm();
+                    renderPacientesView();
                 });
             }
 
@@ -774,12 +956,16 @@
                         <div class="lg:col-span-2 bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
                             <div class="flex justify-between items-center mb-6">
                                 <h2 class="text-xl font-bold text-slate-700 flex items-center gap-2">
-                                    <i class="fas fa-calendar-day text-blue-500"></i> Agenda de Hoy
+                                    <i class="fas fa-calendar-day text-blue-500"></i> Agenda
                                 </h2>
-                                <span class="text-sm bg-blue-50 text-blue-600 px-4 py-1.5 rounded-full font-bold">
-                                    ${new Date().toLocaleDateString("es-AR", { day: "2-digit", month: "long" })}
-                                </span>
+                                <div class="flex items-center gap-2">
+                                    <button id="btn-fecha-prev" class="bg-slate-100 hover:bg-slate-200 text-slate-700 px-3 py-1.5 rounded-lg font-bold transition-colors">&lt;</button>
+                                    <button id="btn-fecha-hoy" class="bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 px-3 py-1.5 rounded-lg font-bold transition-colors">Hoy</button>
+                                    <button id="btn-fecha-next" class="bg-slate-100 hover:bg-slate-200 text-slate-700 px-3 py-1.5 rounded-lg font-bold transition-colors">&gt;</button>
+                                    <input id="agenda-date-picker" type="date" value="${selectedAgendaDate}" class="p-2 bg-white border border-slate-200 rounded-lg text-sm text-slate-700">
+                                </div>
                             </div>
+                            <p id="agenda-fecha-label" class="text-sm bg-blue-50 text-blue-600 px-4 py-1.5 rounded-full font-bold inline-block mb-4">${formatDateLong(selectedAgendaDate)}</p>
                             <div id="lista-turnos" class="space-y-3">
                                 <p class="text-slate-400 italic text-center py-12">Consultando disponibilidad...</p>
                             </div>
@@ -837,6 +1023,50 @@
             const btnExportCsv = document.getElementById("btn-export-csv");
             if (btnExportCsv) {
                 btnExportCsv.addEventListener("click", exportarTurnosHoyCSV);
+            }
+
+            const datePicker = document.getElementById("agenda-date-picker");
+            if (datePicker) {
+                datePicker.addEventListener("change", (event) => {
+                    selectedAgendaDate = String(event.target.value || selectedAgendaDate);
+                    subscribeToTurnos();
+                });
+            }
+
+            const btnFechaHoy = document.getElementById("btn-fecha-hoy");
+            if (btnFechaHoy) {
+                btnFechaHoy.addEventListener("click", () => {
+                    selectedAgendaDate = getLocalISODate();
+                    const picker = document.getElementById("agenda-date-picker");
+                    if (picker) {
+                        picker.value = selectedAgendaDate;
+                    }
+                    subscribeToTurnos();
+                });
+            }
+
+            const btnFechaPrev = document.getElementById("btn-fecha-prev");
+            if (btnFechaPrev) {
+                btnFechaPrev.addEventListener("click", () => {
+                    selectedAgendaDate = addDaysToISODate(selectedAgendaDate, -1);
+                    const picker = document.getElementById("agenda-date-picker");
+                    if (picker) {
+                        picker.value = selectedAgendaDate;
+                    }
+                    subscribeToTurnos();
+                });
+            }
+
+            const btnFechaNext = document.getElementById("btn-fecha-next");
+            if (btnFechaNext) {
+                btnFechaNext.addEventListener("click", () => {
+                    selectedAgendaDate = addDaysToISODate(selectedAgendaDate, 1);
+                    const picker = document.getElementById("agenda-date-picker");
+                    if (picker) {
+                        picker.value = selectedAgendaDate;
+                    }
+                    subscribeToTurnos();
+                });
             }
 
             subscribeToTurnos();
