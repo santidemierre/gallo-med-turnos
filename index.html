@@ -692,6 +692,58 @@
             }
         }
 
+        function initTopNav() {
+            const navDashboard = document.getElementById("nav-dashboard");
+            if (navDashboard) {
+                navDashboard.addEventListener("click", (event) => {
+                    event.preventDefault();
+                    if (!currentUser) {
+                        showToast("Iniciá sesión para usar el panel.", "error");
+                        return;
+                    }
+                    renderDashboard();
+                });
+            }
+
+            const navMedicos = document.getElementById("nav-medicos");
+            if (navMedicos) {
+                navMedicos.addEventListener("click", (event) => {
+                    event.preventDefault();
+                    if (!currentUser) {
+                        showToast("Iniciá sesión para ver profesionales.", "error");
+                        return;
+                    }
+                    renderDashboard();
+                    setTimeout(() => {
+                        const panelMedicos = document.getElementById("panel-medicos");
+                        if (panelMedicos) {
+                            panelMedicos.scrollIntoView({ behavior: "smooth", block: "start" });
+                        }
+                    }, 0);
+                });
+            }
+
+            const navPacientes = document.getElementById("nav-pacientes");
+            if (navPacientes) {
+                navPacientes.addEventListener("click", (event) => {
+                    event.preventDefault();
+                    if (!currentUser) {
+                        showToast("Iniciá sesión para gestionar pacientes.", "error");
+                        return;
+                    }
+                    renderForm();
+                });
+            }
+
+            const navSettings = document.getElementById("nav-settings");
+            if (navSettings) {
+                navSettings.addEventListener("click", () => {
+                    const modeLabel = activeStorageMode === "firebase" ? "Firebase" : "Local";
+                    showToast(`Modo activo: ${modeLabel}`, "success");
+                });
+            }
+        }
+
         function renderDashboard() {
             const mainContent = getMainContent();
             if (!mainContent) {
@@ -741,7 +793,7 @@
                                 </div>
                                 <i class="fas fa-users absolute -right-4 -bottom-4 text-8xl opacity-10"></i>
                             </div>
-                            <div class="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
+                            <div id="panel-medicos" class="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
                                 <h3 class="text-slate-700 font-bold mb-4 flex items-center gap-2">
                                     <i class="fas fa-user-md text-blue-500"></i> Profesionales
                                 </h3>
@@ -825,7 +877,7 @@
 
                             <div class="space-y-2">
                                 <label class="block text-xs font-bold text-slate-400 uppercase tracking-widest">DNI</label>
-                                <input type="text" name="dni" inputmode="numeric" required pattern="\d{7,10}" class="w-full p-4 bg-slate-50 border-2 border-slate-50 rounded-2xl focus:border-blue-500 focus:bg-white outline-none" placeholder="Solo números">
+                                <input type="text" name="dni" inputmode="numeric" required pattern="[0-9]{7,10}" class="w-full p-4 bg-slate-50 border-2 border-slate-50 rounded-2xl focus:border-blue-500 focus:bg-white outline-none" placeholder="Solo números">
                             </div>
 
                             <div class="space-y-2">
@@ -880,6 +932,8 @@
         }
 
         async function initApp() {
+            initTopNav();
+
             if (requestedStorageMode === "firebase") {
                 const firebaseReady = await initFirebaseServices();
                 if (firebaseReady) {
@@ -949,12 +1003,12 @@
             </div>
             <div class="flex items-center gap-6 text-slate-400">
                 <div class="hidden md:flex gap-6 text-sm font-bold uppercase tracking-widest">
-                    <a href="#" class="text-blue-600">Dashboard</a>
-                    <a href="#" class="hover:text-slate-600">Médicos</a>
-                    <a href="#" class="hover:text-slate-600">Pacientes</a>
+                    <a id="nav-dashboard" href="#" class="text-blue-600">Dashboard</a>
+                    <a id="nav-medicos" href="#" class="hover:text-slate-600">Médicos</a>
+                    <a id="nav-pacientes" href="#" class="hover:text-slate-600">Pacientes</a>
                 </div>
                 <div class="w-px h-6 bg-slate-200 hidden md:block"></div>
-                <button class="w-10 h-10 rounded-full bg-slate-100 flex items-center justify-center hover:bg-slate-200 transition-colors">
+                <button id="nav-settings" class="w-10 h-10 rounded-full bg-slate-100 flex items-center justify-center hover:bg-slate-200 transition-colors">
                     <i class="fas fa-cog"></i>
                 </button>
             </div>
