@@ -24,8 +24,13 @@
         let turnosUnsubscribe = null;
         const medicos = ["BERNAUDO", "BOCCA", "CANTARELLA", "COLL", "EKIZIAN", "FELIPPO", "GARCIA", "LOPEZ CABANILLAS", "PINON", "PUENTES"];
 
-        const mainContent = document.getElementById("main-content");
-        const loadingOverlay = document.getElementById("loading-overlay");
+        function getMainContent() {
+            return document.getElementById("main-content");
+        }
+
+        function getLoadingOverlay() {
+            return document.getElementById("loading-overlay");
+        }
 
         function getTurnosCollectionRef() {
             return collection(db, "artifacts", appId, "public", "data", "turnos");
@@ -115,6 +120,10 @@
         }
 
         function showLoading(show) {
+            const loadingOverlay = getLoadingOverlay();
+            if (!loadingOverlay) {
+                return;
+            }
             loadingOverlay.classList.toggle("hidden", !show);
         }
 
@@ -139,6 +148,10 @@
         }
 
         function renderConfigError() {
+            const mainContent = getMainContent();
+            if (!mainContent) {
+                return;
+            }
             mainContent.innerHTML = `
                 <div class="max-w-2xl mx-auto p-6 mt-8">
                     <div class="bg-red-50 border border-red-200 rounded-2xl p-6">
@@ -153,6 +166,10 @@
 
         function renderLogin() {
             stopTurnosSubscription();
+            const mainContent = getMainContent();
+            if (!mainContent) {
+                return;
+            }
             mainContent.innerHTML = `
                 <div class="max-w-md mx-auto p-4 md:p-8 mt-8">
                     <div class="bg-white rounded-3xl shadow-2xl border border-slate-100 overflow-hidden">
@@ -406,6 +423,10 @@
         }
 
         function renderDashboard() {
+            const mainContent = getMainContent();
+            if (!mainContent) {
+                return;
+            }
             mainContent.innerHTML = `
                 <div class="max-w-6xl mx-auto p-4 md:p-8">
                     <header class="flex flex-col md:flex-row justify-between items-center mb-8 gap-4">
@@ -502,6 +523,10 @@
         function renderForm() {
             stopTurnosSubscription();
             const minDate = getLocalISODate();
+            const mainContent = getMainContent();
+            if (!mainContent) {
+                return;
+            }
             mainContent.innerHTML = `
                 <div class="max-w-3xl mx-auto p-4 md:p-8">
                     <button id="btn-volver" class="mb-6 text-slate-500 hover:text-blue-600 flex items-center gap-2 font-semibold transition-colors">
