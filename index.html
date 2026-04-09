@@ -31,6 +31,8 @@
         const requestedStorageMode = String(window.__storage_mode || "local").toLowerCase() === "firebase" ? "firebase" : "local";
         const TURNOS_STORAGE_KEY = `${appId}-turnos`;
         const SESSION_STORAGE_KEY = `${appId}-session`;
+        const MEDICOS_STORAGE_KEY = `${appId}-medicos`;
+        const CANCELACIONES_STORAGE_KEY = `${appId}-cancelaciones`;
 
         let currentUser = null;
         let turnosUnsubscribe = null;
@@ -38,9 +40,10 @@
         let activeStorageMode = "local";
         let firebaseApi = null;
         let selectedAgendaDate = getLocalISODate();
+        let selectedMedicoId = null;
         const authListeners = [];
         const turnosListeners = [];
-        const medicos = ["BERNAUDO", "BOCCA", "CANTARELLA", "COLL", "EKIZIAN", "FELIPPO", "GARCIA", "LOPEZ CABANILLAS", "PINON", "PUENTES"];
+        const medicoListeners = [];
 
         function getMainContent() {
             return document.getElementById("main-content");
@@ -68,6 +71,112 @@
 
         function formatDateLong(isoDate) {
             return parseISODate(isoDate).toLocaleDateString("es-AR", { day: "2-digit", month: "long", year: "numeric" });
+        }
+
+        function getDayOfWeek(isoDate) {
+            const days = ["domingo", "lunes", "martes", "miércoles", "jueves", "viernes", "sábado"];
+            return days[parseISODate(isoDate).getDay()];
+        }
+
+        function readStoredMedicos() {
+            try {
+                const raw = localStorage.getItem(MEDICOS_STORAGE_KEY);
+                const parsed = raw ? JSON.parse(raw) : [];
+                return Array.isArray(parsed) ? parsed : [];
+            } catch (error) {
+                console.error("Error leyendo médicos:", error);
+                return [];
+            }
+        }
+
+        function writeStoredMedicos(medicos) {
+            localStorage.setItem(MEDICOS_STORAGE_KEY, JSON.stringify(medicos));
+            emitMedicosChanged();
+        }
+
+        function getMedicoById(id) {
+            return readStoredMedicos().find((m) => m.id === id);
+        }
+
+        function createMedico(nombre, especialidad, horaInicio = "08:00", horaFin = "17:00") {
+            const medicos = readStoredMedicos();
+            const newMedico = {
+                id: `medico-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+                nombre: cleanText(nombre),
+                especialidad: cleanText(especialidad),
+                horaInicio,
+                horaFin,
+                diasTrabajo: [1, 2, 3, 4, 5],
+                estado: "activo",
+                vacacionesDesde: null,
+                vacacionesHasta: null,
+                createdAt: new Date().toISOString()
+            };
+            medicos.push(newMedico);
+            writeStoredMedicos(medicos);
+            return newMedico;
+        }
+
+        function updateMedico(id, updates) {
+            const medicos = readStoredMedicos();
+            const idx = medicos.findIndex((m) => m.id === id);
+            if (idx >= 0) {
+                medicos[idx] = { ...medicos[idx], ...updates, updatedAt: new Date().toISOString() };
+                writeStoredMedicos(medicos);
+            }
+        }
+
+        function deleteMedico(id) {
+            const medicos = readStoredMedicos().filter((m) => m.id !== id);
+            writeStoredMedicos(medicos);
+        }
+
+        function emitMedicosChanged() {
+            medicoListeners.forEach((listener) => {
+                try {
+                    listener();
+                } catch (error) {
+                    console.error("Error notificando cambios de médicos:", error);
+                }
+            });
+        }
+
+        function readStoredCancelaciones() {
+            try {
+                const raw = localStorage.getItem(CANCELACIONES_STORAGE_KEY);
+                const parsed = raw ? JSON.parse(raw) : [];
+                return Array.isArray(parsed) ? parsed : [];
+            } catch (error) {
+                console.error("Error leyendo cancelaciones:", error);
+                return [];
+            }
+        }
+
+        function writeStoredCancelaciones(cancelaciones) {
+            localStorage.setItem(CANCELACIONES_STORAGE_KEY, JSON.stringify(cancelaciones));
+        }
+
+        function cancelarTurno(turnoId, razon = "") {
+            const cancelaciones = readStoredCancelaciones();
+            cancelaciones.push({
+                id: `cancelacion-${Date.now()}`,
+                turnoId,
+                razon: cleanText(razon),
+                canceledAt: new Date().toISOString()
+            });
+            writeStoredCancelaciones(cancelaciones);
+        }
+
+        function isTurnoCancelado(turnoId) {
+            return readStoredCancelaciones().some((c) => c.turnoId === turnoId);
+        }
+
+        function isEnVacaciones(medicoId, fecha) {
+            const medico = getMedicoById(medicoId);
+            if (!medico || !medico.vacacionesDesde || !medico.vacacionesHasta) {
+                return false;
+            }
+            return fecha >= medico.vacacionesDesde && fecha <= medico.vacacionesHasta;
         }
 
         function getFirebaseConfig() {
@@ -306,8 +415,13 @@
         }
 
         function validateTurnoData(turnoData) {
-            if (!medicos.includes(turnoData.medicoId)) {
+            const medico = getMedicoById(turnoData.medicoId);
+            if (!medico) {
                 return "Debe seleccionar un profesional válido.";
+            }
+
+            if (isEnVacaciones(turnoData.medicoId, turnoData.fecha)) {
+                return "El profesional seleccionado está de vacaciones en esa fecha.";
             }
 
             if (!/^\d{7,10}$/.test(turnoData.dni)) {
@@ -320,11 +434,6 @@
 
             if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(turnoData.hora)) {
                 return "La hora no tiene un formato válido.";
-            }
-
-            const [hour] = turnoData.hora.split(":").map(Number);
-            if (hour < 8 || hour > 20) {
-                return "El horario permitido es de 08:00 a 20:59.";
             }
 
             if (!/^\d{4}-\d{2}-\d{2}$/.test(turnoData.fecha)) {
@@ -340,6 +449,40 @@
             }
 
             return null;
+        }
+
+        function getHorariosDisponibles(medicoId, fecha) {
+            const medico = getMedicoById(medicoId);
+            if (!medico) {
+                return [];
+            }
+
+            const dayOfWeek = parseISODate(fecha).getDay();
+            if (!medico.diasTrabajo.includes(dayOfWeek)) {
+                return [];
+            }
+
+            if (isEnVacaciones(medicoId, fecha)) {
+                return [];
+            }
+
+            const [startHour, startMin] = medico.horaInicio.split(":").map(Number);
+            const [endHour, endMin] = medico.horaFin.split(":").map(Number);
+            const horariosOcupados = readStoredTurnos()
+                .filter((t) => t.medicoId === medicoId && t.fecha === fecha && !isTurnoCancelado(t.id))
+                .map((t) => t.hora);
+
+            const horarios = [];
+            for (let h = startHour; h < endHour; h++) {
+                for (let m = 0; m < 60; m += 30) {
+                    const horaStr = `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+                    if (!horariosOcupados.includes(horaStr)) {
+                        horarios.push(horaStr);
+                    }
+                }
+            }
+
+            return horarios;
         }
 
         async function existeTurnoDuplicado(turnoData) {
@@ -898,10 +1041,10 @@
                 navMedicos.addEventListener("click", (event) => {
                     event.preventDefault();
                     if (!currentUser) {
-                        showToast("Iniciá sesión para ver profesionales.", "error");
+                        showToast("Iniciá sesión para acceder.", "error");
                         return;
                     }
-                    renderMedicosView();
+                    renderMedicoABM();
                 });
             }
 
@@ -910,10 +1053,10 @@
                 navPacientes.addEventListener("click", (event) => {
                     event.preventDefault();
                     if (!currentUser) {
-                        showToast("Iniciá sesión para gestionar pacientes.", "error");
+                        showToast("Iniciá sesión para acceder.", "error");
                         return;
                     }
-                    renderPacientesView();
+                    renderGestionOperativa();
                 });
             }
 
@@ -1075,10 +1218,36 @@
         function renderForm() {
             stopTurnosSubscription();
             const minDate = getLocalISODate();
+            const medicosList = readStoredMedicos();
             const mainContent = getMainContent();
             if (!mainContent) {
                 return;
             }
+
+            if (!medicosList.length) {
+                mainContent.innerHTML = `
+                    <div class="max-w-3xl mx-auto p-4 md:p-8">
+                        <button id="btn-volver" class="mb-6 text-slate-500 hover:text-blue-600 flex items-center gap-2 font-semibold transition-colors">
+                            <i class="fas fa-chevron-left"></i> Volver
+                        </button>
+                        <div class="bg-yellow-50 border border-yellow-200 rounded-2xl p-6 text-center">
+                            <p class="text-yellow-700 font-semibold mb-4">No hay médicos configurados en el sistema.</p>
+                            <p class="text-yellow-600 text-sm mb-4">Por favor, agrega médicos primero en la sección de Gestión.</p>
+                            <button id="btn-ir-medicos" class="bg-yellow-600 hover:bg-yellow-700 text-white px-6 py-2 rounded-lg font-bold">Ir a Gestión de Médicos</button>
+                        </div>
+                    </div>
+                `;
+                const btnVolver = document.getElementById("btn-volver");
+                if (btnVolver) {
+                    btnVolver.addEventListener("click", renderDashboard);
+                }
+                const btnIrMedicos = document.getElementById("btn-ir-medicos");
+                if (btnIrMedicos) {
+                    btnIrMedicos.addEventListener("click", renderMedicoABM);
+                }
+                return;
+            }
+
             mainContent.innerHTML = `
                 <div class="max-w-3xl mx-auto p-4 md:p-8">
                     <button id="btn-volver" class="mb-6 text-slate-500 hover:text-blue-600 flex items-center gap-2 font-semibold transition-colors">
@@ -1088,61 +1257,71 @@
                     <div class="bg-white rounded-3xl shadow-2xl border border-slate-100 overflow-hidden">
                         <div class="bg-blue-600 p-8 text-white">
                             <h2 class="text-3xl font-bold">Nuevo Turno</h2>
-                            <p class="opacity-80 mt-1">Complete la información para reservar el espacio</p>
+                            <p class="opacity-80 mt-1">Selecciona médico, fecha y horario disponible</p>
                         </div>
 
-                        <form id="form-turno" class="p-8 grid grid-cols-1 md:grid-cols-2 gap-6">
-                            <div class="md:col-span-2">
+                        <form id="form-turno" class="p-8 space-y-6">
+                            <div>
                                 <label class="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-2">Médico Responsable</label>
-                                <select name="medico" required class="w-full p-4 bg-slate-50 border-2 border-slate-50 rounded-2xl focus:border-blue-500 focus:bg-white outline-none transition-all appearance-none cursor-pointer">
+                                <select id="medico-select" name="medico" required class="w-full p-4 bg-slate-50 border-2 border-slate-50 rounded-2xl focus:border-blue-500 focus:bg-white outline-none transition-all appearance-none cursor-pointer">
                                     <option value="">Seleccione profesional...</option>
-                                    ${medicos.map((m) => `<option value="${m}">${m}</option>`).join("")}
+                                    ${medicosList.map((m) => `<option value="${m.id}">${m.nombre} (${m.especialidad})</option>`).join("")}
                                 </select>
                             </div>
 
-                            <div class="space-y-2">
-                                <label class="block text-xs font-bold text-slate-400 uppercase tracking-widest">Nombre del Paciente</label>
-                                <input type="text" name="paciente" required minlength="3" maxlength="120" class="w-full p-4 bg-slate-50 border-2 border-slate-50 rounded-2xl focus:border-blue-500 focus:bg-white outline-none" placeholder="Nombre y Apellido">
+                            <div id="medico-info" class="hidden p-4 bg-blue-50 rounded-xl text-sm text-blue-700">
+                                Horario: <span id="medico-horario"></span> | Especialidad: <span id="medico-especialidad"></span>
                             </div>
 
-                            <div class="space-y-2">
-                                <label class="block text-xs font-bold text-slate-400 uppercase tracking-widest">DNI</label>
-                                <input type="text" name="dni" inputmode="numeric" required pattern="[0-9]{7,10}" class="w-full p-4 bg-slate-50 border-2 border-slate-50 rounded-2xl focus:border-blue-500 focus:bg-white outline-none" placeholder="Solo números">
+                            <div>
+                                <label class="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-2">Fecha</label>
+                                <input type="date" id="fecha-select" name="fecha" required min="${minDate}" class="w-full p-4 bg-slate-50 border-2 border-slate-50 rounded-2xl focus:border-blue-500 focus:bg-white outline-none">
                             </div>
 
-                            <div class="space-y-2">
-                                <label class="block text-xs font-bold text-slate-400 uppercase tracking-widest">Fecha</label>
-                                <input type="date" name="fecha" required min="${minDate}" class="w-full p-4 bg-slate-50 border-2 border-slate-50 rounded-2xl focus:border-blue-500 focus:bg-white outline-none">
+                            <div>
+                                <label class="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-2">Horario disponible</label>
+                                <select id="hora-select" name="hora" required class="w-full p-4 bg-slate-50 border-2 border-slate-50 rounded-2xl focus:border-blue-500 focus:bg-white outline-none transition-all appearance-none cursor-pointer">
+                                    <option value="">Seleccione horario...</option>
+                                </select>
                             </div>
 
-                            <div class="space-y-2">
-                                <label class="block text-xs font-bold text-slate-400 uppercase tracking-widest">Hora</label>
-                                <input type="time" name="hora" required min="08:00" max="20:59" class="w-full p-4 bg-slate-50 border-2 border-slate-50 rounded-2xl focus:border-blue-500 focus:bg-white outline-none">
+                            <hr class="my-6">
+
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <div>
+                                    <label class="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-2">Nombre del Paciente</label>
+                                    <input type="text" name="paciente" required minlength="3" maxlength="120" class="w-full p-4 bg-slate-50 border-2 border-slate-50 rounded-2xl focus:border-blue-500 focus:bg-white outline-none" placeholder="Nombre y Apellido">
+                                </div>
+
+                                <div>
+                                    <label class="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-2">DNI</label>
+                                    <input type="text" name="dni" inputmode="numeric" required pattern="[0-9]{7,10}" class="w-full p-4 bg-slate-50 border-2 border-slate-50 rounded-2xl focus:border-blue-500 focus:bg-white outline-none" placeholder="Solo números">
+                                </div>
+
+                                <div>
+                                    <label class="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-2">Teléfono</label>
+                                    <input type="tel" name="telefono" maxlength="20" placeholder="2345..." class="w-full p-4 bg-slate-50 border-2 border-slate-50 rounded-2xl focus:border-blue-500 focus:bg-white outline-none">
+                                </div>
+
+                                <div>
+                                    <label class="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-2">Obra Social</label>
+                                    <input type="text" name="obraSocial" maxlength="80" placeholder="Ej: IOMA, OSDE" class="w-full p-4 bg-slate-50 border-2 border-slate-50 rounded-2xl focus:border-blue-500 focus:bg-white outline-none">
+                                </div>
                             </div>
 
-                            <div class="space-y-2">
-                                <label class="block text-xs font-bold text-slate-400 uppercase tracking-widest">Teléfono</label>
-                                <input type="tel" name="telefono" maxlength="20" placeholder="2345..." class="w-full p-4 bg-slate-50 border-2 border-slate-50 rounded-2xl focus:border-blue-500 focus:bg-white outline-none">
-                            </div>
-
-                            <div class="space-y-2">
-                                <label class="block text-xs font-bold text-slate-400 uppercase tracking-widest">Obra Social</label>
-                                <input type="text" name="obraSocial" maxlength="80" placeholder="Ej: IOMA, OSDE" class="w-full p-4 bg-slate-50 border-2 border-slate-50 rounded-2xl focus:border-blue-500 focus:bg-white outline-none">
-                            </div>
-
-                            <div class="md:col-span-2 flex items-center gap-4 bg-slate-50 p-4 rounded-2xl">
+                            <div class="flex items-center gap-4 bg-slate-50 p-4 rounded-2xl">
                                 <input type="checkbox" name="primeraVez" id="primeraVez" class="w-6 h-6 rounded-lg accent-blue-600">
-                                <label for="primeraVez" class="text-sm text-slate-600 font-bold cursor-pointer select-none">Es la primera vez que asiste al centro</label>
+                                <label for="primeraVez" class="text-sm text-slate-600 font-bold cursor-pointer select-none">Primera vez en el centro</label>
                             </div>
 
-                            <div class="md:col-span-2">
+                            <div>
                                 <label class="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-2">Observaciones</label>
-                                <textarea name="nota" rows="3" maxlength="300" class="w-full p-4 bg-slate-50 border-2 border-slate-50 rounded-2xl focus:border-blue-500 focus:bg-white outline-none" placeholder="Añadir notas relevantes..."></textarea>
+                                <textarea name="nota" rows="3" maxlength="300" class="w-full p-4 bg-slate-50 border-2 border-slate-50 rounded-2xl focus:border-blue-500 focus:bg-white outline-none" placeholder="Añadir notas..."></textarea>
                             </div>
 
-                            <div class="md:col-span-2 pt-4">
+                            <div class="pt-4">
                                 <button type="submit" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-black py-5 rounded-2xl shadow-xl shadow-blue-100 transition-all transform active:scale-[0.98]">
-                                    RESERVAR TURNO
+                                    CONFIRMAR TURNO
                                 </button>
                             </div>
                         </form>
@@ -1155,14 +1334,350 @@
                 btnVolver.addEventListener("click", renderDashboard);
             }
 
+            const medicoSelect = document.getElementById("medico-select");
+            const fechaSelect = document.getElementById("fecha-select");
+            const horaSelect = document.getElementById("hora-select");
+            const medicoInfo = document.getElementById("medico-info");
+
+            const actualizarHorarios = () => {
+                const medicoId = medicoSelect.value;
+                const fecha = fechaSelect.value;
+                horaSelect.innerHTML = '<option value="">Seleccione horario...</option>';
+
+                if (medicoId && fecha) {
+                    const horarios = getHorariosDisponibles(medicoId, fecha);
+                    if (horarios.length) {
+                        horaSelect.innerHTML += horarios.map((h) => `<option value="${h}">${h}</option>`).join("");
+                    } else {
+                        horaSelect.innerHTML += '<option disabled>Sin horarios disponibles</option>';
+                    }
+                }
+            };
+
+            if (medicoSelect) {
+                medicoSelect.addEventListener("change", () => {
+                    const medicoId = medicoSelect.value;
+                    if (medicoId) {
+                        const medico = getMedicoById(medicoId);
+                        if (medico) {
+                            document.getElementById("medico-horario").textContent = `${medico.horaInicio} - ${medico.horaFin}`;
+                            document.getElementById("medico-especialidad").textContent = medico.especialidad;
+                            medicoInfo.classList.remove("hidden");
+                        }
+                    } else {
+                        medicoInfo.classList.add("hidden");
+                    }
+                    actualizarHorarios();
+                });
+            }
+
+            if (fechaSelect) {
+                fechaSelect.addEventListener("change", actualizarHorarios);
+            }
+
             const formTurno = document.getElementById("form-turno");
             if (formTurno) {
                 formTurno.addEventListener("submit", guardarTurno);
             }
         }
 
+        async function renderMedicoABM() {
+            stopTurnosSubscription();
+            const mainContent = getMainContent();
+            if (!mainContent) {
+                return;
+            }
+
+            const medicos = readStoredMedicos();
+
+            mainContent.innerHTML = `
+                <div class="max-w-6xl mx-auto p-4 md:p-8">
+                    <header class="mb-6 flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+                        <div>
+                            <h1 class="text-3xl font-bold text-slate-800">Gestión de Médicos</h1>
+                            <p class="text-slate-500 font-medium">Crea, edita y elimina profesionales</p>
+                        </div>
+                        <button id="btn-medico-nuevo" class="bg-green-600 hover:bg-green-700 text-white px-6 py-3 rounded-xl font-bold transition-colors flex items-center gap-2">
+                            <i class="fas fa-plus"></i> Nuevo
+                        </button>
+                    </header>
+
+                    <div id="medicos-list" class="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
+                        ${!medicos.length ? `
+                            <p class="text-slate-500 text-center py-12 italic">No hay médicos registrados aún.</p>
+                        ` : `
+                            <div class="space-y-2">
+                                ${medicos.map((m) => `
+                                    <div class="border border-slate-200 rounded-xl p-4 flex items-start justify-between">
+                                        <div>
+                                            <p class="font-bold text-slate-800">${m.nombre}</p>
+                                            <p class="text-sm text-slate-500">Especialidad: ${m.especialidad}</p>
+                                            <p class="text-sm text-slate-500">Horario: ${m.horaInicio} - ${m.horaFin}</p>
+                                            <p class="text-xs text-slate-400 mt-1">ID: ${m.id}</p>
+                                            ${m.vacacionesDesde ? `<p class="text-xs text-red-500 font-semibold">Vacaciones: ${m.vacacionesDesde} a ${m.vacacionesHasta}</p>` : ""}
+                                        </div>
+                                        <div class="flex gap-2">
+                                            <button class="btn-medico-editar bg-blue-100 hover:bg-blue-200 text-blue-700 px-3 py-2 rounded-lg font-bold text-sm transition-colors" data-id="${m.id}">Editar</button>
+                                            <button class="btn-medico-borrar bg-red-100 hover:bg-red-200 text-red-700 px-3 py-2 rounded-lg font-bold text-sm transition-colors" data-id="${m.id}">Borrar</button>
+                                        </div>
+                                    </div>
+                                `).join("")}
+                            </div>
+                        `}
+                    </div>
+                </div>
+            `;
+
+            const btnMedicoNuevo = document.getElementById("btn-medico-nuevo");
+            if (btnMedicoNuevo) {
+                btnMedicoNuevo.addEventListener("click", () => renderMedicoForm());
+            }
+
+            document.querySelectorAll(".btn-medico-editar").forEach((btn) => {
+                btn.addEventListener("click", (e) => renderMedicoForm(String(e.currentTarget.dataset.id)));
+            });
+
+            document.querySelectorAll(".btn-medico-borrar").forEach((btn) => {
+                btn.addEventListener("click", (e) => {
+                    const id = String(e.currentTarget.dataset.id);
+                    if (confirm("¿Confirmar eliminación?")) {
+                        deleteMedico(id);
+                        showToast("Médico eliminado", "success");
+                        renderMedicoABM();
+                    }
+                });
+            });
+        }
+
+        function renderMedicoForm(medicoId = null) {
+            const mainContent = getMainContent();
+            if (!mainContent) {
+                return;
+            }
+
+            const medico = medicoId ? getMedicoById(medicoId) : null;
+            const title = medico ? `Editar ${medico.nombre}` : "Nuevo Médico";
+
+            mainContent.innerHTML = `
+                <div class="max-w-2xl mx-auto p-4 md:p-8">
+                    <button id="btn-volver" class="mb-6 text-slate-500 hover:text-blue-600 flex items-center gap-2 font-semibold transition-colors">
+                        <i class="fas fa-chevron-left"></i> Volver
+                    </button>
+
+                    <div class="bg-white rounded-3xl shadow-2xl border border-slate-100 p-8">
+                        <h2 class="text-2xl font-bold text-slate-800 mb-6">${title}</h2>
+
+                        <form id="form-medico" class="space-y-4">
+                            <div>
+                                <label class="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-2">Nombre</label>
+                                <input type="text" name="nombre" required value="${medico?.nombre || ""}" maxlength="80" class="w-full p-4 bg-slate-50 border-2 border-slate-50 rounded-2xl focus:border-blue-500 focus:bg-white outline-none">
+                            </div>
+
+                            <div>
+                                <label class="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-2">Especialidad</label>
+                                <input type="text" name="especialidad" required value="${medico?.especialidad || ""}" maxlength="60" class="w-full p-4 bg-slate-50 border-2 border-slate-50 rounded-2xl focus:border-blue-500 focus:bg-white outline-none" placeholder="Ej: Cardiólogo">
+                            </div>
+
+                            <div class="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label class="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-2">Hora Inicio</label>
+                                    <input type="time" name="horaInicio" value="${medico?.horaInicio || "08:00"}" class="w-full p-4 bg-slate-50 border-2 border-slate-50 rounded-2xl focus:border-blue-500 focus:bg-white outline-none">
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-2">Hora Fin</label>
+                                    <input type="time" name="horaFin" value="${medico?.horaFin || "17:00"}" class="w-full p-4 bg-slate-50 border-2 border-slate-50 rounded-2xl focus:border-blue-500 focus:bg-white outline-none">
+                                </div>
+                            </div>
+
+                            <div class="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label class="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-2">Vacaciones Desde</label>
+                                    <input type="date" name="vacacionesDesde" value="${medico?.vacacionesDesde || ""}" class="w-full p-4 bg-slate-50 border-2 border-slate-50 rounded-2xl focus:border-blue-500 focus:bg-white outline-none">
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-2">Vacaciones Hasta</label>
+                                    <input type="date" name="vacacionesHasta" value="${medico?.vacacionesHasta || ""}" class="w-full p-4 bg-slate-50 border-2 border-slate-50 rounded-2xl focus:border-blue-500 focus:bg-white outline-none">
+                                </div>
+                            </div>
+
+                            <div class="pt-4">
+                                <button type="submit" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-black py-4 rounded-2xl shadow-xl shadow-blue-100 transition-all transform active:scale-[0.98]">
+                                    ${medico ? "ACTUALIZAR" : "CREAR"}
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            `;
+
+            const btnVolver = document.getElementById("btn-volver");
+            if (btnVolver) {
+                btnVolver.addEventListener("click", renderMedicoABM);
+            }
+
+            const form = document.getElementById("form-medico");
+            if (form) {
+                form.addEventListener("submit", (e) => {
+                    e.preventDefault();
+                    const formData = new FormData(form);
+                    const updates = {
+                        nombre: cleanText(formData.get("nombre")),
+                        especialidad: cleanText(formData.get("especialidad")),
+                        horaInicio: String(formData.get("horaInicio") || "08:00"),
+                        horaFin: String(formData.get("horaFin") || "17:00"),
+                        vacacionesDesde: formData.get("vacacionesDesde") || null,
+                        vacacionesHasta: formData.get("vacacionesHasta") || null
+                    };
+
+                    if (medico) {
+                        updateMedico(medico.id, updates);
+                        showToast("Médico actualizado", "success");
+                    } else {
+                        createMedico(updates.nombre, updates.especialidad, updates.horaInicio, updates.horaFin);
+                        showToast("Médico creado", "success");
+                    }
+                    renderMedicoABM();
+                });
+            }
+        }
+
+        async function renderGestionOperativa() {
+            stopTurnosSubscription();
+            const mainContent = getMainContent();
+            if (!mainContent) {
+                return;
+            }
+
+            const allTurnos = await getAllTurnos();
+            const cancelaciones = readStoredCancelaciones();
+
+            mainContent.innerHTML = `
+                <div class="max-w-6xl mx-auto p-4 md:p-8">
+                    <header class="mb-8">
+                        <h1 class="text-3xl font-bold text-slate-800">Gestión Operativa</h1>
+                        <p class="text-slate-500 font-medium">Cancelaciones, vacaciones e impresión</p>
+                    </header>
+
+                    <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                        <div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
+                            <h2 class="text-xl font-bold text-slate-700 mb-4 flex items-center gap-2">
+                                <i class="fas fa-print text-blue-500"></i> Imprimir Turnos
+                            </h2>
+                            <div class="space-y-2">
+                                ${readStoredMedicos().map((m) => `
+                                    <button class="btn-imprimir-medico w-full text-left p-3 border border-slate-200 rounded-lg hover:bg-blue-50 transition-colors" data-medico-id="${m.id}">
+                                        <p class="font-semibold text-slate-800">${m.nombre}</p>
+                                        <p class="text-sm text-slate-500">${m.especialidad}</p>
+                                    </button>
+                                `).join("")}
+                            </div>
+                        </div>
+
+                        <div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
+                            <h2 class="text-xl font-bold text-slate-700 mb-4 flex items-center gap-2">
+                                <i class="fas fa-ban text-red-500"></i> Turnos Cancelados
+                            </h2>
+                            ${!cancelaciones.length ? `
+                                <p class="text-slate-500 italic text-center py-6">Sin cancelaciones</p>
+                            ` : `
+                                <div class="space-y-2 max-h-64 overflow-y-auto">
+                                    ${cancelaciones.map((c) => {
+                                        const turno = allTurnos.find((t) => t.id === c.turnoId);
+                                        return `
+                                            <div class="text-sm border-l-4 border-red-300 pl-3 py-2">
+                                                <p class="font-semibold text-slate-800">${turno?.paciente || "Desconocido"}</p>
+                                                <p class="text-slate-500">${turno?.fecha} ${turno?.hora}</p>
+                                                ${c.razon ? `<p class="text-red-600 text-xs italic">Razón: ${c.razon}</p>` : ""}
+                                            </div>
+                                        `;
+                                    }).join("")}
+                                </div>
+                            `}
+                        </div>
+                    </div>
+                </div>
+            `;
+
+            document.querySelectorAll(".btn-imprimir-medico").forEach((btn) => {
+                btn.addEventListener("click", (e) => {
+                    const medicoId = String(e.currentTarget.dataset.medicoId);
+                    imprimirTurnosPorMedico(medicoId);
+                });
+            });
+        }
+
+        function imprimirTurnosPorMedico(medicoId) {
+            const medico = getMedicoById(medicoId);
+            if (!medico) {
+                showToast("Médico no encontrado", "error");
+                return;
+            }
+
+            const turnos = readStoredTurnos().filter((t) => t.medicoId === medicoId && !isTurnoCancelado(t.id));
+            const html = `
+                <!DOCTYPE html>
+                <html>
+                <head>
+                    <title>Agenda - ${medico.nombre}</title>
+                    <style>
+                        body { font-family: Arial, sans-serif; margin: 20px; color: #333; }
+                        h1, h2 { color: #1e40af; }
+                        table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+                        th, td { border: 1px solid #ddd; padding: 10px; text-align: left; }
+                        th { background-color: #1e40af; color: white; }
+                        tr:nth-child(even) { background-color: #f9fafb; }
+                        .header { margin-bottom: 20px; }
+                    </style>
+                </head>
+                <body>
+                    <div class="header">
+                        <h1>Centro Médico Gallo</h1>
+                        <h2>${medico.nombre} - ${medico.especialidad}</h2>
+                        <p>Horario: ${medico.horaInicio} - ${medico.horaFin}</p>
+                        <p>Fecha de impresión: ${new Date().toLocaleDateString("es-AR")}</p>
+                    </div>
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Fecha</th>
+                                <th>Hora</th>
+                                <th>Paciente</th>
+                                <th>DNI</th>
+                                <th>Teléfono</th>
+                                <th>Obra Social</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${turnos.map((t) => `
+                                <tr>
+                                    <td>${t.fecha}</td>
+                                    <td>${t.hora}</td>
+                                    <td>${t.paciente}</td>
+                                    <td>${t.dni}</td>
+                                    <td>${t.telefono || "-"}</td>
+                                    <td>${t.obraSocial || "S/O"}</td>
+                                </tr>
+                            `).join("")}
+                        </tbody>
+                    </table>
+                </body>
+                </html>
+            `;
+
+            const ventana = window.open("", "_blank");
+            ventana.document.write(html);
+            ventana.document.close();
+            setTimeout(() => ventana.print(), 500);
+        }
+
         async function initApp() {
             initTopNav();
+
+            if (readStoredMedicos().length === 0) {
+                createMedico("Dr. Bernaudo", "Cardiología", "08:00", "17:00");
+                createMedico("Dra. Bocca", "Pediatría", "09:00", "18:00");
+                createMedico("Dr. García", "Medicina General", "08:00", "17:00");
+            }
 
             if (requestedStorageMode === "firebase") {
                 const firebaseReady = await initFirebaseServices();
