@@ -104,8 +104,10 @@
                 id: `medico-${Date.now()}-${Math.random().toString(16).slice(2)}`,
                 nombre: cleanText(nombre),
                 especialidad: cleanText(especialidad),
-                horaInicio,
-                horaFin,
+                turnos: [
+                    { nombre: "Mañana", horaInicio, horaFin: "12:30" },
+                    { nombre: "Tarde", horaInicio: "14:00", horaFin }
+                ],
                 diasTrabajo: [1, 2, 3, 4, 5],
                 estado: "activo",
                 vacacionesDesde: null,
@@ -466,23 +468,26 @@
                 return [];
             }
 
-            const [startHour, startMin] = medico.horaInicio.split(":").map(Number);
-            const [endHour, endMin] = medico.horaFin.split(":").map(Number);
             const horariosOcupados = readStoredTurnos()
                 .filter((t) => t.medicoId === medicoId && t.fecha === fecha && !isTurnoCancelado(t.id))
                 .map((t) => t.hora);
 
             const horarios = [];
-            for (let h = startHour; h < endHour; h++) {
-                for (let m = 0; m < 60; m += 30) {
-                    const horaStr = `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
-                    if (!horariosOcupados.includes(horaStr)) {
-                        horarios.push(horaStr);
+            medico.turnos.forEach((turno) => {
+                const [startHour, startMin] = turno.horaInicio.split(":").map(Number);
+                const [endHour, endMin] = turno.horaFin.split(":").map(Number);
+
+                for (let h = startHour; h < endHour; h++) {
+                    for (let m = 0; m < 60; m += 30) {
+                        const horaStr = `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+                        if (!horariosOcupados.includes(horaStr)) {
+                            horarios.push(horaStr);
+                        }
                     }
                 }
-            }
+            });
 
-            return horarios;
+            return horarios.sort();
         }
 
         async function existeTurnoDuplicado(turnoData) {
@@ -1127,9 +1132,12 @@
                                     <i class="fas fa-user-md text-blue-500"></i> Profesionales
                                 </h3>
                                 <div class="space-y-1 max-h-64 overflow-y-auto pr-2 custom-scrollbar">
-                                    ${medicos.map((m) => `
+                                    ${readStoredMedicos().map((m) => `
                                         <div class="flex items-center justify-between text-sm p-3 hover:bg-slate-50 rounded-xl transition-colors group">
-                                            <span class="text-slate-600 font-medium group-hover:text-blue-600">${m}</span>
+                                            <div>
+                                                <span class="text-slate-600 font-medium group-hover:text-blue-600">${m.nombre}</span>
+                                                <p class="text-xs text-slate-400">${m.especialidad}</p>
+                                            </div>
                                             <div class="w-2 h-2 rounded-full bg-green-400 shadow-[0_0_8px_rgba(74,222,128,0.5)]"></div>
                                         </div>
                                     `).join("")}
@@ -1457,6 +1465,7 @@
 
             const medico = medicoId ? getMedicoById(medicoId) : null;
             const title = medico ? `Editar ${medico.nombre}` : "Nuevo Médico";
+            const diasSemana = ["Domingo", "Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado"];
 
             mainContent.innerHTML = `
                 <div class="max-w-2xl mx-auto p-4 md:p-8">
@@ -1467,7 +1476,7 @@
                     <div class="bg-white rounded-3xl shadow-2xl border border-slate-100 p-8">
                         <h2 class="text-2xl font-bold text-slate-800 mb-6">${title}</h2>
 
-                        <form id="form-medico" class="space-y-4">
+                        <form id="form-medico" class="space-y-6">
                             <div>
                                 <label class="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-2">Nombre</label>
                                 <input type="text" name="nombre" required value="${medico?.nombre || ""}" maxlength="80" class="w-full p-4 bg-slate-50 border-2 border-slate-50 rounded-2xl focus:border-blue-500 focus:bg-white outline-none">
@@ -1478,25 +1487,62 @@
                                 <input type="text" name="especialidad" required value="${medico?.especialidad || ""}" maxlength="60" class="w-full p-4 bg-slate-50 border-2 border-slate-50 rounded-2xl focus:border-blue-500 focus:bg-white outline-none" placeholder="Ej: Cardiólogo">
                             </div>
 
-                            <div class="grid grid-cols-2 gap-4">
-                                <div>
-                                    <label class="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-2">Hora Inicio</label>
-                                    <input type="time" name="horaInicio" value="${medico?.horaInicio || "08:00"}" class="w-full p-4 bg-slate-50 border-2 border-slate-50 rounded-2xl focus:border-blue-500 focus:bg-white outline-none">
-                                </div>
-                                <div>
-                                    <label class="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-2">Hora Fin</label>
-                                    <input type="time" name="horaFin" value="${medico?.horaFin || "17:00"}" class="w-full p-4 bg-slate-50 border-2 border-slate-50 rounded-2xl focus:border-blue-500 focus:bg-white outline-none">
+                            <div>
+                                <label class="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-3">Días de Trabajo</label>
+                                <div class="grid grid-cols-2 gap-2">
+                                    ${diasSemana.map((dia, idx) => `
+                                        <label class="flex items-center gap-2 p-3 border border-slate-200 rounded-lg hover:bg-slate-50 cursor-pointer transition-colors">
+                                            <input type="checkbox" name="dia-${idx}" class="dia-trabajo" value="${idx}" ${medico?.diasTrabajo?.includes(idx) ? "checked" : ""} class="w-4 h-4 accent-blue-600">
+                                            <span class="text-sm font-medium text-slate-700">${dia}</span>
+                                        </label>
+                                    `).join("")}
                                 </div>
                             </div>
 
-                            <div class="grid grid-cols-2 gap-4">
-                                <div>
-                                    <label class="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-2">Vacaciones Desde</label>
-                                    <input type="date" name="vacacionesDesde" value="${medico?.vacacionesDesde || ""}" class="w-full p-4 bg-slate-50 border-2 border-slate-50 rounded-2xl focus:border-blue-500 focus:bg-white outline-none">
+                            <div class="border-t pt-6">
+                                <h3 class="text-lg font-bold text-slate-800 mb-4">Turnos</h3>
+                                <div class="space-y-4">
+                                    <div class="bg-slate-50 p-4 rounded-2xl">
+                                        <p class="font-semibold text-slate-700 mb-3">Turno Mañana</p>
+                                        <div class="grid grid-cols-2 gap-3">
+                                            <div>
+                                                <label class="block text-xs text-slate-600 font-bold mb-1">Desde</label>
+                                                <input type="time" id="turno-manana-inicio" value="${medico?.turnos?.[0]?.horaInicio || "08:00"}" class="w-full p-2 bg-white border border-slate-200 rounded-lg">
+                                            </div>
+                                            <div>
+                                                <label class="block text-xs text-slate-600 font-bold mb-1">Hasta</label>
+                                                <input type="time" id="turno-manana-fin" value="${medico?.turnos?.[0]?.horaFin || "12:30"}" class="w-full p-2 bg-white border border-slate-200 rounded-lg">
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <div class="bg-slate-50 p-4 rounded-2xl">
+                                        <p class="font-semibold text-slate-700 mb-3">Turno Tarde</p>
+                                        <div class="grid grid-cols-2 gap-3">
+                                            <div>
+                                                <label class="block text-xs text-slate-600 font-bold mb-1">Desde</label>
+                                                <input type="time" id="turno-tarde-inicio" value="${medico?.turnos?.[1]?.horaInicio || "14:00"}" class="w-full p-2 bg-white border border-slate-200 rounded-lg">
+                                            </div>
+                                            <div>
+                                                <label class="block text-xs text-slate-600 font-bold mb-1">Hasta</label>
+                                                <input type="time" id="turno-tarde-fin" value="${medico?.turnos?.[1]?.horaFin || "18:00"}" class="w-full p-2 bg-white border border-slate-200 rounded-lg">
+                                            </div>
+                                        </div>
+                                    </div>
                                 </div>
-                                <div>
-                                    <label class="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-2">Vacaciones Hasta</label>
-                                    <input type="date" name="vacacionesHasta" value="${medico?.vacacionesHasta || ""}" class="w-full p-4 bg-slate-50 border-2 border-slate-50 rounded-2xl focus:border-blue-500 focus:bg-white outline-none">
+                            </div>
+
+                            <div class="border-t pt-6">
+                                <h3 class="text-lg font-bold text-slate-800 mb-4">Vacaciones</h3>
+                                <div class="grid grid-cols-2 gap-4">
+                                    <div>
+                                        <label class="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-2">Desde</label>
+                                        <input type="date" id="vacaciones-desde" value="${medico?.vacacionesDesde || ""}" class="w-full p-4 bg-slate-50 border-2 border-slate-50 rounded-2xl focus:border-blue-500 focus:bg-white outline-none">
+                                    </div>
+                                    <div>
+                                        <label class="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-2">Hasta</label>
+                                        <input type="date" id="vacaciones-hasta" value="${medico?.vacacionesHasta || ""}" class="w-full p-4 bg-slate-50 border-2 border-slate-50 rounded-2xl focus:border-blue-500 focus:bg-white outline-none">
+                                    </div>
                                 </div>
                             </div>
 
@@ -1519,21 +1565,47 @@
             if (form) {
                 form.addEventListener("submit", (e) => {
                     e.preventDefault();
-                    const formData = new FormData(form);
+                    
+                    const diasTrabajo = Array.from(document.querySelectorAll(".dia-trabajo:checked"))
+                        .map((cb) => Number(cb.value));
+
+                    if (!diasTrabajo.length) {
+                        showToast("Selecciona al menos un día de trabajo", "error");
+                        return;
+                    }
+
                     const updates = {
-                        nombre: cleanText(formData.get("nombre")),
-                        especialidad: cleanText(formData.get("especialidad")),
-                        horaInicio: String(formData.get("horaInicio") || "08:00"),
-                        horaFin: String(formData.get("horaFin") || "17:00"),
-                        vacacionesDesde: formData.get("vacacionesDesde") || null,
-                        vacacionesHasta: formData.get("vacacionesHasta") || null
+                        nombre: cleanText(form.nombre.value),
+                        especialidad: cleanText(form.especialidad.value),
+                        diasTrabajo,
+                        turnos: [
+                            {
+                                nombre: "Mañana",
+                                horaInicio: form["turno-manana-inicio"].value || "08:00",
+                                horaFin: form["turno-manana-fin"].value || "12:30"
+                            },
+                            {
+                                nombre: "Tarde",
+                                horaInicio: form["turno-tarde-inicio"].value || "14:00",
+                                horaFin: form["turno-tarde-fin"].value || "18:00"
+                            }
+                        ],
+                        vacacionesDesde: form["vacaciones-desde"].value || null,
+                        vacacionesHasta: form["vacaciones-hasta"].value || null
                     };
 
                     if (medico) {
                         updateMedico(medico.id, updates);
                         showToast("Médico actualizado", "success");
                     } else {
-                        createMedico(updates.nombre, updates.especialidad, updates.horaInicio, updates.horaFin);
+                        const newMedico = readStoredMedicos();
+                        newMedico.push({
+                            id: `medico-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+                            ...updates,
+                            estado: "activo",
+                            createdAt: new Date().toISOString()
+                        });
+                        writeStoredMedicos(newMedico);
                         showToast("Médico creado", "success");
                     }
                     renderMedicoABM();
